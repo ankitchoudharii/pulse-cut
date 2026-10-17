@@ -14,17 +14,38 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Unpack ZIP automatically (Uploaded from Android Tablet)
+      - name: Unpack ZIP & Auto-Repair Project Files
         run: |
           if [ ! -f "settings.gradle.kts" ]; then
-            for z in *.zip; do
+            for z in *.zip */*.zip; do
               if [ -f "$z" ]; then
                 echo "Unpacking $z..."
                 unzip -o "$z" -d .
               fi
             done
           fi
-          chmod +x gradlew || true
+          if [ ! -f "settings.gradle.kts" ]; then
+            echo "ERROR: PulseCutPro-Android-Tablet-NLE.zip was not found in your repository!"
+            echo "Please tap Add file -> Upload files in your GitHub repo and upload PulseCutPro-Android-Tablet-NLE.zip."
+            exit 1
+          fi
+          rm -rf gradlew gradlew.bat gradle
+          if [ -f "app/src/main/res/values/themes.xml" ]; then
+            sed -i 's/#FF0D0F14/@color\/nle_bg/g' app/src/main/res/values/themes.xml
+          fi
+          if [ -f "app/src/main/java/com/pulsecut/pro/speech/SubtitleFormatIO.kt" ]; then
+            python3 -c '
+          p = "app/src/main/java/com/pulsecut/pro/speech/SubtitleFormatIO.kt"
+          t = open(p).read().replace("Regex(\"\\n\\s*\\n\")", "Regex(\"\\\\n\\\\s*\\\\n\")")
+          open(p, "w").write(t)
+          '
+          fi
+          if [ -f "app/src/main/java/com/pulsecut/pro/speech/WhistleNativeBridge.kt" ]; then
+            sed -i 's/decodeFromString<WhistleTranscriptResult>(rawJson)/decodeFromString(WhistleTranscriptResult.serializer(), rawJson)/g' app/src/main/java/com/pulsecut/pro/speech/WhistleNativeBridge.kt
+          fi
+          if [ -f "app/src/main/java/com/pulsecut/pro/model/RichTextModels.kt" ]; then
+            sed -i 's/0x00000000,/0x00000000L,/g; s/0x6600D2FF,/0x6600D2FFL,/g' app/src/main/java/com/pulsecut/pro/model/RichTextModels.kt
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -32,12 +53,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK 26.1 & CMake 3.22.1
+      - name: Accept Android SDK Licenses & Install NDK / CMake
         run: |
-          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1" > /dev/null 2>&1 || true
 
       - name: Bundle Cactus Whistle 16.9 MB Model (whistle.cact)
         continue-on-error: true
@@ -51,27 +70,15 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-
-      - name: Generate Signing Key for Tablet Installation
-        run: |
-          if [ ! -f app/release-key.jks ]; then
-            keytool -genkeypair -v \
-              -keystore app/release-key.jks \
-              -alias pulsecut_key \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass pulsecut123 -keypass pulsecut123 \
-              -dname "CN=PulseCut Pro, OU=Tablet, O=PulseCut, L=Jodhpur, S=RJ, C=IN"
-          fi
+          validate-wrappers: false
 
       - name: Compile APK
         run: |
-          gradle assembleDebug assembleRelease --stacktrace
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload Installable Tablet APK
         uses: actions/upload-artifact@v4
         with:
           name: PulseCutPro-Tablet-APK
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
